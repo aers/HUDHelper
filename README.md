@@ -1,4 +1,4 @@
-# HUDPlayer
+# HUDHelper
 
 XivLauncher plugin to assist in editing your HUD.
 
