@@ -19,9 +19,9 @@ namespace HUDHelper
         public unsafe struct CalculateBoundsResult
         {
             [FieldOffset(0x0)] public int left;
-            [FieldOffset(0x4)] public int bottom;
+            [FieldOffset(0x4)] public int top;
             [FieldOffset(0x8)] public int right;
-            [FieldOffset(0xC)] public int top;
+            [FieldOffset(0xC)] public int bottom;
         }
 
         private unsafe delegate void AtkUnitBaseSetScaleDelegate(AtkUnitBase* thisPtr, float scale, bool unk);
@@ -45,6 +45,8 @@ namespace HUDHelper
         private unsafe delegate void HideHUDLayoutDelegate(void* agentHudLayout);
         private Hook<HideHUDLayoutDelegate> hookHideHUDLayout;
 
+        private unsafe delegate bool AddonHudLayoutScreenSetAddonScale(AddonHudLayoutScreen* thisPtr, MoveableAddonInfoStruct* addonStruct, byte scaleID);
+        private AddonHudLayoutScreenSetAddonScale addonHudLayoutScreenSetAddonScale;
 
         private Plugin _p;
 
@@ -69,6 +71,7 @@ namespace HUDHelper
             var atkResNodeSetPositionAddress = scanner.ScanText("E8 ?? ?? ?? ?? 49 FF CC");
             var atkResNodeSetSizeAddress = scanner.ScanText("48 83 EC 38 48 85 C9 75 08");
             var atkComponentButtonToggleStateAddress = scanner.ScanText("48 89 5C 24 ?? 57 48 83 EC 30 0F B6 FA 48 8B D9 84 D2");
+            var addonHudLayoutScreenSetAddonScaleAddress = scanner.ScanText("E8 ?? ?? ?? ?? 48 8B 8B ?? ?? ?? ?? B2 01 48 8B 01 48 8B 5C 24 ?? 48 83 C4 30");
 
             this.atkUnitBaseSetPosition = Marshal.GetDelegateForFunctionPointer<AtkUnitBaseSetPositionDelegate>(atkUnitBaseSetPositionAddress);
             this.atkUnitBaseSetScale = Marshal.GetDelegateForFunctionPointer<AtkUnitBaseSetScaleDelegate>(atkUnitBaseSetScaleAddress);
@@ -76,6 +79,7 @@ namespace HUDHelper
             this.atkResNodeSetPosition = Marshal.GetDelegateForFunctionPointer<AtkResNodeSetPositionDelegate>(atkResNodeSetPositionAddress);
             this.atkResNodeSetSize = Marshal.GetDelegateForFunctionPointer<AtkResNodeSetSizeDelegate>(atkResNodeSetSizeAddress);
             this.atkComponentButtonToggleState = Marshal.GetDelegateForFunctionPointer<AtkComponentButtonToggleState>(atkComponentButtonToggleStateAddress);
+            this.addonHudLayoutScreenSetAddonScale = Marshal.GetDelegateForFunctionPointer<AddonHudLayoutScreenSetAddonScale>(addonHudLayoutScreenSetAddonScaleAddress);
             this.hookShowHUDLayout = new Hook<ShowHUDLayoutDelegate>(showHUDLayoutAddress, new ShowHUDLayoutDelegate(ShowHUDLayoutDetour), this);
             this.hookHideHUDLayout = new Hook<HideHUDLayoutDelegate>(hideHUDLayoutAddress, new HideHUDLayoutDelegate(HideHUDLayoutDetour), this);
 
@@ -162,6 +166,9 @@ namespace HUDHelper
 
         public void SetScale(float scale)
         {
+            short centerX = (short)(hudLayoutScreen->SelectedAddon->SelectedAtkUnit->X + ((hudLayoutScreen->SelectedAddon->SelectedAtkUnit->RootNode->Width * hudLayoutScreen->SelectedAddon->SelectedAtkUnit->Scale)/ 2));
+            short centerY = (short)(hudLayoutScreen->SelectedAddon->SelectedAtkUnit->Y + ((hudLayoutScreen->SelectedAddon->SelectedAtkUnit->RootNode->Height * hudLayoutScreen->SelectedAddon->SelectedAtkUnit->Scale)/ 2));
+
             atkUnitBaseSetScale(hudLayoutScreen->SelectedAddon->SelectedAtkUnit, scale, true);
 
             ushort newWidth = 0;
@@ -185,19 +192,23 @@ namespace HUDHelper
                     // you may be thinking "what the fuck" but this is what the game code does so whatever
                     newWidth = hudLayoutScreen->SelectedOverlayNode->Component->OwnerNode->AtkResNode.Width;
                     newHeight = hudLayoutScreen->SelectedOverlayNode->Component->OwnerNode->AtkResNode.Height;
+
+
                 }
                 else
                 {
                     var bounds = stackalloc CalculateBoundsResult[1];
                     atkUnitBaseCalculateBounds(hudLayoutScreen->SelectedAddon->SelectedAtkUnit, bounds);
 
-                    newWidth = (ushort)(bounds->left - bounds->bottom);
-                    newHeight = (ushort)(bounds->top - bounds->right);
+                    newWidth = (ushort)(bounds->right - bounds->left);
+                    newHeight = (ushort)(bounds->bottom - bounds->top);
 
                 }
 
-                newX = hudLayoutScreen->SelectedAddon->SelectedAtkUnit->X;
-                newY = hudLayoutScreen->SelectedAddon->SelectedAtkUnit->Y;
+                newX = (short)(centerX - (newWidth / 2));
+                newY = (short)(centerY - (newHeight / 2));
+
+                atkUnitBaseSetPosition(hudLayoutScreen->SelectedAddon->SelectedAtkUnit, newX, newY);
             }
 
             atkResNodeSetSize((AtkResNode*)hudLayoutScreen->SelectedOverlayNode, newWidth, newHeight);
@@ -206,9 +217,14 @@ namespace HUDHelper
             SetHasChanges();
         }
 
+        public void GetBounds(CalculateBoundsResult * bounds)
+        {
+            atkUnitBaseCalculateBounds(hudLayoutScreen->SelectedAddon->SelectedAtkUnit, bounds);
+        }
+
         private void SetHasChanges()
         {
-            hudLayoutScreen->SelectedAddon->PositionHasChanged = true;
+            hudLayoutScreen->SelectedAddon->PositionHasChanged = 1;
 
             atkComponentButtonToggleState(hudLayoutWindow->SaveButton, true);
 
