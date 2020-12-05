@@ -24,6 +24,14 @@ namespace HUDHelper
             [FieldOffset(0xC)] public int bottom;
         }
 
+        [StructLayout(LayoutKind.Explicit, Size = 0x8)]
+        public unsafe struct MouseEvent
+        {
+            [FieldOffset(0x0)] public short X;
+            [FieldOffset(0x2)] public short Y;
+            [FieldOffset(0x4)] public int unk; // few bytes worth of flags 
+        }
+
         private unsafe delegate void AtkUnitBaseSetScaleDelegate(AtkUnitBase* thisPtr, float scale, bool unk);
         private AtkUnitBaseSetScaleDelegate atkUnitBaseSetScale;
         private unsafe delegate void AtkUnitBaseSetPositionDelegate(AtkUnitBase* thisPtr, short X, short Y);
@@ -48,11 +56,21 @@ namespace HUDHelper
         private unsafe delegate bool AddonHudLayoutScreenSetAddonScale(AddonHudLayoutScreen* thisPtr, MoveableAddonInfoStruct* addonStruct, byte scaleID);
         private AddonHudLayoutScreenSetAddonScale addonHudLayoutScreenSetAddonScale;
 
+        private unsafe delegate void AddonHudLayoutScreenEventAddonIsClickedDelegate(AddonHudLayoutScreen* thisPtr, uint slot, MouseEvent* mEvent);
+        private AddonHudLayoutScreenEventAddonIsClickedDelegate addonHudLayoutScreenEventAddonIsClicked;
+
+        private unsafe delegate void AddonHudLayoutScreenEventAddonIsReleasedDelegate(AddonHudLayoutScreen* thisPtr);
+        private AddonHudLayoutScreenEventAddonIsReleasedDelegate addonHudLayoutScreenEventAddonIsReleased;
+
+        private unsafe delegate void AddonHudLayoutScreenEventAddonMovedDelegate(AddonHudLayoutScreen* thisPtr, MouseEvent* mEvent);
+        private AddonHudLayoutScreenEventAddonMovedDelegate addonHudLayoutScreenEventAddonMoved;
+
         private Plugin _p;
 
         public AgentHudLayout* agentHudLayout = null;
         public AddonHudLayoutScreen* hudLayoutScreen = null;
         public AddonHudLayoutWindow* hudLayoutWindow = null;
+        public float* hudScaleTable = null;
 
         public HUDLayoutManager(Plugin p)
         {
@@ -72,6 +90,11 @@ namespace HUDHelper
             var atkResNodeSetSizeAddress = scanner.ScanText("48 83 EC 38 48 85 C9 75 08");
             var atkComponentButtonToggleStateAddress = scanner.ScanText("48 89 5C 24 ?? 57 48 83 EC 30 0F B6 FA 48 8B D9 84 D2");
             var addonHudLayoutScreenSetAddonScaleAddress = scanner.ScanText("E8 ?? ?? ?? ?? 48 8B 8B ?? ?? ?? ?? B2 01 48 8B 01 48 8B 5C 24 ?? 48 83 C4 30");
+            var addonHudLayoutScreenEventAddonIsClickedAddress = scanner.ScanText("48 89 5C 24 ?? 41 56 48 83 EC 40 48 8B 81 ?? ?? ?? ??");
+            var addonHudLayoutScreenEventAddonIsReleasedAddress = scanner.ScanText("E9 ?? ?? ?? ?? 48 83 BB ?? ?? ?? ?? ?? 0F 84 ?? ?? ?? ?? 48 89 6C 24 ?? 48 8B 6C 24 ??");
+            var addonHudLayoutScreenEventAddonMovedAddress = scanner.ScanText("40 53 41 56 48 83 EC 38 48 83 B9 ?? ?? ?? ?? ??");
+
+            this.hudScaleTable = (float*)scanner.GetStaticAddressFromSig("73 46 48 8D 0D ?? ?? ?? ??").ToPointer();
 
             this.atkUnitBaseSetPosition = Marshal.GetDelegateForFunctionPointer<AtkUnitBaseSetPositionDelegate>(atkUnitBaseSetPositionAddress);
             this.atkUnitBaseSetScale = Marshal.GetDelegateForFunctionPointer<AtkUnitBaseSetScaleDelegate>(atkUnitBaseSetScaleAddress);
@@ -80,6 +103,9 @@ namespace HUDHelper
             this.atkResNodeSetSize = Marshal.GetDelegateForFunctionPointer<AtkResNodeSetSizeDelegate>(atkResNodeSetSizeAddress);
             this.atkComponentButtonToggleState = Marshal.GetDelegateForFunctionPointer<AtkComponentButtonToggleState>(atkComponentButtonToggleStateAddress);
             this.addonHudLayoutScreenSetAddonScale = Marshal.GetDelegateForFunctionPointer<AddonHudLayoutScreenSetAddonScale>(addonHudLayoutScreenSetAddonScaleAddress);
+            this.addonHudLayoutScreenEventAddonIsClicked = Marshal.GetDelegateForFunctionPointer<AddonHudLayoutScreenEventAddonIsClickedDelegate>(addonHudLayoutScreenEventAddonIsClickedAddress);
+            this.addonHudLayoutScreenEventAddonIsReleased = Marshal.GetDelegateForFunctionPointer<AddonHudLayoutScreenEventAddonIsReleasedDelegate>(addonHudLayoutScreenEventAddonIsReleasedAddress);
+            this.addonHudLayoutScreenEventAddonMoved = Marshal.GetDelegateForFunctionPointer<AddonHudLayoutScreenEventAddonMovedDelegate>(addonHudLayoutScreenEventAddonMovedAddress);
             this.hookShowHUDLayout = new Hook<ShowHUDLayoutDelegate>(showHUDLayoutAddress, new ShowHUDLayoutDelegate(ShowHUDLayoutDetour), this);
             this.hookHideHUDLayout = new Hook<HideHUDLayoutDelegate>(hideHUDLayoutAddress, new HideHUDLayoutDelegate(HideHUDLayoutDetour), this);
 
@@ -146,8 +172,31 @@ namespace HUDHelper
 
             return hudLayoutScreen->SelectedAddon->SelectedAtkUnit;
         }
+ 
+        // this function simulates clicking the addon, dragging it to a new position, and releasing the mouseclick
+        // this is the 'safest' way to set a direct position since it makes sure every flag the game expects to be set is set
+        public void SetPositionGame(short X, short Y)
+        {
+            var mEvent = stackalloc MouseEvent[1];
+            mEvent->unk = 0;
+            mEvent->X = (short)hudLayoutScreen->SelectedOverlayNode->AtkResNode.X;
+            mEvent->Y = (short)hudLayoutScreen->SelectedOverlayNode->AtkResNode.Y;
+            addonHudLayoutScreenEventAddonIsClicked(hudLayoutScreen, 0, mEvent);
+            mEvent->X = X;
+            mEvent->Y = Y;
+            addonHudLayoutScreenEventAddonMoved(hudLayoutScreen, mEvent);
+            addonHudLayoutScreenEventAddonIsReleased(hudLayoutScreen);
+        }
 
-        public void SetPosition(short X, short Y)
+        public void SetScaleGame(float scale)
+        {
+            hudScaleTable[0] = scale;
+            addonHudLayoutScreenSetAddonScale(hudLayoutScreen, hudLayoutScreen->SelectedAddon, 0);
+            hudScaleTable[0] = 0.6F;
+        }
+
+        // unused/unsafe manual functions left here in case someone needs the knowledge
+        public void SetPositionManual(short X, short Y)
         {
             if (hudLayoutScreen->SelectedAddon->XOffset != -1)
             {
@@ -164,8 +213,9 @@ namespace HUDHelper
             SetHasChanges();
         }
 
-        public void SetScale(float scale)
-        {
+        // broken 
+        public void SetScaleManual(float scale)
+        {            
             short centerX = (short)(hudLayoutScreen->SelectedAddon->SelectedAtkUnit->X + ((hudLayoutScreen->SelectedAddon->SelectedAtkUnit->RootNode->Width * hudLayoutScreen->SelectedAddon->SelectedAtkUnit->Scale)/ 2));
             short centerY = (short)(hudLayoutScreen->SelectedAddon->SelectedAtkUnit->Y + ((hudLayoutScreen->SelectedAddon->SelectedAtkUnit->RootNode->Height * hudLayoutScreen->SelectedAddon->SelectedAtkUnit->Scale)/ 2));
 
@@ -242,7 +292,6 @@ namespace HUDHelper
         }
 
         private bool disposedValue;
-
         protected virtual void Dispose(bool disposing)
         {
             if (!disposedValue)
